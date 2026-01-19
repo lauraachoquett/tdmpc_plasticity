@@ -48,19 +48,70 @@ class TOLD(nn.Module):
 		return self._Q1(x), self._Q2(x)
 
 
+
+	def compute_zgr_from_z(self, z: torch.Tensor, eps: float = 1e-6) -> float:
+
+		if z.grad is None:
+			raise RuntimeError("z.grad is None. Did you forget retain_grad() or backward()?")
+
+		with torch.no_grad():
+			zero_grad_mask = (z.grad.abs() < eps)
+			return zero_grad_mask.float().mean().item()
+
+	def compute_fzar_from_obs(self, obs: torch.Tensor, eps: float = 1e-3) -> float:
+		"""
+		Compute Feature Zero Activation Ratio from backbone output.
+		
+		obs: batch of real observations
+		eps: threshold for considering a feature "effectively zero"
+		"""
+		self._encoder.eval()  # stable evaluation mode
+		with torch.no_grad():
+			z = self.h(obs)
+			zero_mask = (z.abs() < eps)
+			return zero_mask.float().mean().item()
+
+	def compute_srank(self, obs: torch.Tensor, delta: float = 0.01) -> int:
+		"""
+		Compute the effective feature rank (srank) of the backbone output.
+		obs: batch of observations
+		delta: threshold for cumulative singular values (default 0.01)
+		"""
+		self._encoder.eval()
+		with torch.no_grad():
+			z = self.h(obs)              # (batch_size, latent_dim)
+			z_cpu = z.detach().cpu()
+			z_centered = z_cpu - z_cpu.mean(dim=0, keepdim=True)
+
+			sigma = torch.linalg.svdvals(z_centered)
+			cum_sum = torch.cumsum(sigma, dim=0)
+			total_sum = sigma.sum()
+			k = torch.searchsorted(cum_sum / total_sum, 1 - delta)
+			return int(k.item() + 1)
+
+
 class TDMPC():
 	"""Implementation of TD-MPC learning + inference."""
 	def __init__(self, cfg):
 		self.cfg = cfg
-		self.device = torch.device('cuda')
+		if torch.backends.mps.is_available():
+			self.device = torch.device('mps')
+		elif torch.cuda.is_available():
+			self.device = torch.device('cuda')
+		else:
+			self.device = torch.device('cpu')
+   
 		self.std = h.linear_schedule(cfg.std_schedule, 0)
-		self.model = TOLD(cfg).cuda()
+		self.model = TOLD(cfg).to(self.device)
 		self.model_target = deepcopy(self.model)
 		self.optim = torch.optim.Adam(self.model.parameters(), lr=self.cfg.lr)
 		self.pi_optim = torch.optim.Adam(self.model._pi.parameters(), lr=self.cfg.lr)
 		self.aug = h.RandomShiftsAug(cfg)
 		self.model.eval()
 		self.model_target.eval()
+		self.initial_model = deepcopy(self.model)
+		self.initial_model.eval()
+		h.set_requires_grad(self.initial_model, False)
 
 	def state_dict(self):
 		"""Retrieve state dict of TOLD model, including slow-moving target network."""
@@ -184,9 +235,16 @@ class TDMPC():
 		self.model.train()
 
 		# Representation
-		z = self.model.h(self.aug(obs))
+		z_backbone = self.model.h(self.aug(obs))
+		z_backbone.retain_grad()
+
+		srank = self.model.compute_srank(self.aug(obs))
+  
+		# Copy pour rollout
+		z = z_backbone
 		zs = [z.detach()]
 
+		fzar = self.model.compute_fzar_from_obs(self.aug(obs))
 		consistency_loss, reward_loss, value_loss, priority_loss = 0, 0, 0, 0
 		for t in range(self.cfg.horizon):
 
@@ -213,7 +271,10 @@ class TDMPC():
 		weighted_loss = (total_loss.squeeze(1) * weights).mean()
 		weighted_loss.register_hook(lambda grad: grad * (1/self.cfg.horizon))
 		weighted_loss.backward()
+		zgr = self.model.compute_zgr_from_z(z_backbone)
+
 		grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm, error_if_nonfinite=False)
+  
 		self.optim.step()
 		replay_buffer.update_priorities(idxs, priority_loss.clamp(max=1e4).detach())
 
@@ -229,4 +290,33 @@ class TDMPC():
 				'pi_loss': pi_loss,
 				'total_loss': float(total_loss.mean().item()),
 				'weighted_loss': float(weighted_loss.mean().item()),
-				'grad_norm': float(grad_norm)}
+				'grad_norm': float(grad_norm),
+    			'weight_distance': self.calculate_weight_distance(), 
+    			'weight_magnitude': self.calculate_weight_magnitude(),
+       			'zgr' : zgr,
+          		'fzar':fzar,
+            	'srank':srank}
+
+	@torch.no_grad()
+	def calculate_weight_magnitude(self):
+		total_magnitude = 0
+		for param in self.model.parameters():
+			if param.requires_grad:
+				layer_mean_sq = param.pow(2).mean()
+				total_magnitude += layer_mean_sq
+				
+		return total_magnitude.item()
+
+	@torch.no_grad()
+	def calculate_weight_distance(self):
+		"""
+		Calcule la Distance des Poids : 
+		Somme des moyennes des distances quadratiques (w - w0)^2 par couche.
+		"""
+		total_distance = 0
+		for p, p0 in zip(self.model.parameters(), self.initial_model.parameters()):
+			if p.requires_grad:
+				layer_dist = (p - p0).pow(2).mean()
+				total_distance += layer_dist
+				
+		return total_distance.item()
