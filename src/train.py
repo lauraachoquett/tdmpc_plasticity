@@ -2,7 +2,7 @@ import warnings
 warnings.filterwarnings('ignore')
 import os
 os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
-os.environ['MUJOCO_GL'] = 'egl'
+os.environ['MUJOCO_GL'] = 'glfw'
 import torch
 import numpy as np
 import gym
@@ -20,10 +20,15 @@ __CONFIG__, __LOGS__ = 'cfgs', 'logs'
 
 
 def set_seed(seed):
-	random.seed(seed)
-	np.random.seed(seed)
-	torch.manual_seed(seed)
-	torch.cuda.manual_seed_all(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed) 
+    
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        
+    if torch.backends.mps.is_available():
+        torch.mps.manual_seed(seed)
 
 
 def evaluate(env, agent, num_episodes, step, env_step, video):
@@ -45,13 +50,15 @@ def evaluate(env, agent, num_episodes, step, env_step, video):
 
 def train(cfg):
 	"""Training script for TD-MPC. Requires a CUDA-enabled device."""
-	assert torch.cuda.is_available()
+ 
+        
 	set_seed(cfg.seed)
 	work_dir = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / cfg.exp_name / str(cfg.seed)
 	env, agent, buffer = make_env(cfg), TDMPC(cfg), ReplayBuffer(cfg)
 	
 	# Run training
 	L = logger.Logger(work_dir, cfg)
+ 
 	episode_idx, start_time = 0, time.time()
 	for step in range(0, cfg.train_steps+cfg.episode_length, cfg.episode_length):
 
@@ -71,7 +78,6 @@ def train(cfg):
 			num_updates = cfg.seed_steps if step == cfg.seed_steps else cfg.episode_length
 			for i in range(num_updates):
 				train_metrics.update(agent.update(buffer, step+i))
-
 		# Log training episode
 		episode_idx += 1
 		env_step = int(step*cfg.action_repeat)
@@ -82,6 +88,7 @@ def train(cfg):
 			'total_time': time.time() - start_time,
 			'episode_reward': episode.cumulative_reward}
 		train_metrics.update(common_metrics)
+
 		L.log(train_metrics, category='train')
 
 		# Evaluate agent periodically
