@@ -6,9 +6,28 @@ import torch.nn.functional as F
 from torch import distributions as pyd
 from torch.distributions.utils import _standard_normal
 
-
+if torch.backends.mps.is_available():
+    DEVICE = torch.device('mps')
+elif torch.cuda.is_available():
+    DEVICE = torch.device('cuda')
+else:
+    DEVICE = torch.device('cpu')
+    
 __REDUCE__ = lambda b: 'mean' if b else 'none'
 
+
+class SimNorm(nn.Module):
+    """Normalisation simpliciale pour stabiliser l'espace latent."""
+    def __init__(self, cfg):
+        super().__init__()
+        self.dim = cfg.simnorm_dim if hasattr(cfg, 'simnorm_dim') else 8
+
+    def forward(self, x):
+        shp = x.shape
+        x = x.view(*shp[:-1], -1, self.dim)
+        x = F.softmax(x, dim=-1)
+        return x.view(*shp)
+    
 
 def l1(pred, target, reduce=False):
 	"""Computes the L1-loss between predictions and targets."""
@@ -108,7 +127,7 @@ def enc(cfg):
 		layers.extend([Flatten(), nn.Linear(np.prod(out_shape), cfg.latent_dim)])
 	else:
 		layers = [nn.Linear(cfg.obs_shape[0], cfg.enc_dim), nn.ELU(),
-				  nn.Linear(cfg.enc_dim, cfg.latent_dim)]
+				  nn.Linear(cfg.enc_dim, cfg.latent_dim), SimNorm(cfg)]
 	return nn.Sequential(*layers)
 
 
@@ -235,14 +254,14 @@ class ReplayBuffer():
 	def _get_obs(self, arr, idxs):
 		if self.cfg.modality == 'state':
 			return arr[idxs]
-		obs = torch.empty((self.cfg.batch_size, 3*self.cfg.frame_stack, *arr.shape[-2:]), dtype=arr.dtype, device=torch.device('cuda'))
-		obs[:, -3:] = arr[idxs].cuda()
+		obs = torch.empty((self.cfg.batch_size, 3*self.cfg.frame_stack, *arr.shape[-2:]), dtype=arr.dtype, device=DEVICE)
+		obs[:, -3:] = arr[idxs].to(DEVICE)
 		_idxs = idxs.clone()
 		mask = torch.ones_like(_idxs, dtype=torch.bool)
 		for i in range(1, self.cfg.frame_stack):
 			mask[_idxs % self.cfg.episode_length == 0] = False
 			_idxs[mask] -= 1
-			obs[:, -(i+1)*3:-i*3] = arr[_idxs].cuda()
+			obs[:, -(i+1)*3:-i*3] = arr[_idxs].to(DEVICE)
 		return obs.float()
 
 	def sample(self):
@@ -265,10 +284,9 @@ class ReplayBuffer():
 			reward[t] = self._reward[_idxs]
 
 		mask = (_idxs+1) % self.cfg.episode_length == 0
-		next_obs[-1, mask] = self._last_obs[_idxs[mask]//self.cfg.episode_length].cuda().float()
-		if not action.is_cuda:
-			action, reward, idxs, weights = \
-				action.cuda(), reward.cuda(), idxs.cuda(), weights.cuda()
+		next_obs[-1, mask] = self._last_obs[_idxs[mask]//self.cfg.episode_length].to(DEVICE).float()
+		if action.device.type != DEVICE.type:
+			action, reward, idxs, weights = action.to(DEVICE), reward.to(DEVICE), idxs.to(DEVICE), weights.to(DEVICE)
 
 		return obs, next_obs, action, reward.unsqueeze(2), idxs, weights
 
