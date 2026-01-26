@@ -4,6 +4,8 @@ import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
 
+import torch
+
 
 class TOLD(nn.Module):
 	"""Task-Oriented Latent Dynamics (TOLD) model used in TD-MPC."""
@@ -11,6 +13,8 @@ class TOLD(nn.Module):
 		super().__init__()
 		self.cfg = cfg
 		self._encoder = h.enc(cfg)
+		trainable_params = sum(p.numel() for p in self._encoder.parameters() if p.requires_grad)
+		print(f"Trainable parameters in ENCODER : {trainable_params}")
 		self._dynamics = h.mlp(cfg.latent_dim+cfg.action_dim, cfg.mlp_dim, cfg.latent_dim)
 		self._reward = h.mlp(cfg.latent_dim+cfg.action_dim, cfg.mlp_dim, 1)
 		self._pi = h.mlp(cfg.latent_dim, cfg.mlp_dim, cfg.action_dim)
@@ -43,7 +47,6 @@ class TOLD(nn.Module):
 		return mu
 
 	def Q(self, z, a):
-		"""Predict state-action value (Q)."""
 		x = torch.cat([z, a], dim=-1)
 		return self._Q1(x), self._Q2(x)
 
@@ -59,12 +62,6 @@ class TOLD(nn.Module):
 			return zero_grad_mask.float().mean().item()
 
 	def compute_fzar_from_obs(self, obs: torch.Tensor, eps: float = 1e-3) -> float:
-		"""
-		Compute Feature Zero Activation Ratio from backbone output.
-		
-		obs: batch of real observations
-		eps: threshold for considering a feature "effectively zero"
-		"""
 		self._encoder.eval()  # stable evaluation mode
 		with torch.no_grad():
 			z = self.h(obs)
@@ -72,11 +69,7 @@ class TOLD(nn.Module):
 			return zero_mask.float().mean().item()
 
 	def compute_srank(self, obs: torch.Tensor, delta: float = 0.01) -> int:
-		"""
-		Compute the effective feature rank (srank) of the backbone output.
-		obs: batch of observations
-		delta: threshold for cumulative singular values (default 0.01)
-		"""
+
 		self._encoder.eval()
 		with torch.no_grad():
 			z = self.h(obs)              # (batch_size, latent_dim)
@@ -89,6 +82,30 @@ class TOLD(nn.Module):
 			k = torch.searchsorted(cum_sum / total_sum, 1 - delta)
 			return int(k.item() + 1)
 
+	def compute_gradient_covariance(self, loss_per_sample, device):
+		"""Calcule matrice de similarité des gradients normalisés."""
+		encoder_params = [p for p in self._encoder.parameters() if p.requires_grad]
+		N = loss_per_sample.shape[0] // 6  # Sous-échantillonnage
+		P = sum(p.numel() for p in encoder_params)
+		
+		G = torch.zeros(N, P, device=device)
+		
+		step = loss_per_sample.shape[0] // N  # = 6
+		for i in range(N):
+			idx = i * step  # Échantillonner uniformément
+			grads = torch.autograd.grad(
+				outputs=loss_per_sample[idx],
+				inputs=encoder_params,
+				retain_graph=True,
+				create_graph=False  
+			)
+			grads_flat = torch.cat([g.view(-1) for g in grads])
+			G[i] = grads_flat / (grads_flat.norm() + 1e-10)
+		
+		# Matrice de Gram (similarité cosinus)
+		Gram = G @ G.T
+		
+		return Gram
 
 class TDMPC():
 	"""Implementation of TD-MPC learning + inference."""
@@ -227,24 +244,28 @@ class TDMPC():
 			torch.min(*self.model_target.Q(next_z, self.model.pi(next_z, self.cfg.min_std)))
 		return td_target
 
-	def update(self, replay_buffer, step):
+	def update(self, replay_buffer, step,compute_metrics=False,compute_K=False):
 		"""Main update function. Corresponds to one iteration of the TOLD model learning."""
 		obs, next_obses, action, reward, idxs, weights = replay_buffer.sample()
 		self.optim.zero_grad(set_to_none=True)
 		self.std = h.linear_schedule(self.cfg.std_schedule, step)
 		self.model.train()
-
+  
+		#Metrics :
+		fzar = 0
+		srank = 0
+		zgr = 0
+		
 		# Representation
 		z_backbone = self.model.h(self.aug(obs))
 		z_backbone.retain_grad()
-
-		srank = self.model.compute_srank(self.aug(obs))
+		if compute_metrics:
+			srank = self.model.compute_srank(self.aug(obs))
+			fzar = self.model.compute_fzar_from_obs(self.aug(obs))
   
 		# Copy pour rollout
 		z = z_backbone
 		zs = [z.detach()]
-
-		fzar = self.model.compute_fzar_from_obs(self.aug(obs))
 		consistency_loss, reward_loss, value_loss, priority_loss = 0, 0, 0, 0
 		for t in range(self.cfg.horizon):
 
@@ -268,10 +289,19 @@ class TDMPC():
 		total_loss = self.cfg.consistency_coef * consistency_loss.clamp(max=1e4) + \
 					 self.cfg.reward_coef * reward_loss.clamp(max=1e4) + \
 					 self.cfg.value_coef * value_loss.clamp(max=1e4)
+		print("Total loss shape :",total_loss.shape)
+		# Compute NTK et covariance des gradients :
+		if compute_K:
+			grad_cov = self.model.compute_gradient_covariance(total_loss.squeeze(1), self.device)
+			print("K computed")
+			
+
 		weighted_loss = (total_loss.squeeze(1) * weights).mean()
 		weighted_loss.register_hook(lambda grad: grad * (1/self.cfg.horizon))
 		weighted_loss.backward()
-		zgr = self.model.compute_zgr_from_z(z_backbone)
+  
+		if compute_metrics : 
+			zgr = self.model.compute_zgr_from_z(z_backbone)
 
 		grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm, error_if_nonfinite=False)
   
@@ -282,6 +312,8 @@ class TDMPC():
 		pi_loss = self.update_pi(zs)
 		if step % self.cfg.update_freq == 0:
 			h.ema(self.model, self.model_target, self.cfg.tau)
+   
+
 
 		self.model.eval()
 		return {'consistency_loss': float(consistency_loss.mean().item()),
@@ -295,7 +327,9 @@ class TDMPC():
     			'weight_magnitude': self.calculate_weight_magnitude(),
        			'zgr' : zgr,
           		'fzar':fzar,
-            	'srank':srank}
+            	'srank':srank,
+             	'K':grad_cov if compute_K else 0,
+              }
 
 	@torch.no_grad()
 	def calculate_weight_magnitude(self):

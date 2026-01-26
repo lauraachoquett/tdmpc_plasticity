@@ -15,9 +15,11 @@ from env import make_env
 from algorithm.tdmpc import TDMPC
 from algorithm.helper import Episode, ReplayBuffer
 import logger
+from plot_metrics import plot_metrics,plot_K,save_K
+import yaml
+
 torch.backends.cudnn.benchmark = True
 __CONFIG__, __LOGS__ = 'cfgs', 'logs'
-
 
 def set_seed(seed):
     random.seed(seed)
@@ -54,12 +56,17 @@ def train(cfg):
         
 	set_seed(cfg.seed)
 	work_dir = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / cfg.exp_name / str(cfg.seed)
+	
+
+
 	env, agent, buffer = make_env(cfg), TDMPC(cfg), ReplayBuffer(cfg)
 	
 	# Run training
 	L = logger.Logger(work_dir, cfg)
  
 	episode_idx, start_time = 0, time.time()
+	grad_cov_rank = 0
+	grad_cov_frobenius = 0
 	for step in range(0, cfg.train_steps+cfg.episode_length, cfg.episode_length):
 
 		# Collect trajectory
@@ -71,13 +78,25 @@ def train(cfg):
 			episode += (obs, action, reward, done)
 		assert len(episode) == cfg.episode_length
 		buffer += episode
-
+		# compute_K = True
+		compute_K = (episode_idx%20==0)
+  
 		# Update model
 		train_metrics = {}
 		if step >= cfg.seed_steps:
 			num_updates = cfg.seed_steps if step == cfg.seed_steps else cfg.episode_length
-			for i in range(num_updates):
-				train_metrics.update(agent.update(buffer, step+i))
+			for i in range(num_updates-1):
+				agent.update(buffer, step+i)
+			train_metrics.update(agent.update(buffer, step+i,compute_metrics=True,compute_K=compute_K))
+			if compute_K:
+				K = train_metrics['K']
+				path_save_K = save_K(K,work_dir,step)
+				plot_K(path_save_K,work_dir,step)
+				grad_cov_rank = torch.linalg.matrix_rank(K.cpu(),hermitian=True).item()
+				grad_cov_frobenius = torch.norm(K, 'fro').item()
+			train_metrics['NTK_rank'] = grad_cov_rank
+			train_metrics['NTK_frobenius'] = grad_cov_frobenius
+   
 		# Log training episode
 		episode_idx += 1
 		env_step = int(step*cfg.action_repeat)
@@ -95,6 +114,7 @@ def train(cfg):
 		if env_step % cfg.eval_freq == 0:
 			common_metrics['episode_reward'] = evaluate(env, agent, cfg.eval_episodes, step, env_step, L.video)
 			L.log(common_metrics, category='eval')
+			plot_metrics(work_dir)
 
 	L.finish(agent)
 	print('Training completed successfully')
