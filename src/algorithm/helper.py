@@ -23,52 +23,26 @@ class SimNorm(nn.Module):
         self.dim = cfg.simnorm_dim if hasattr(cfg, 'simnorm_dim') else 8
 
     def forward(self, x):
-        shp = x.shape
-        x = x.view(*shp[:-1], -1, self.dim)
+        shp = x.shape # [1,50]
+        x = x.view(*shp[:-1], -1, self.dim) # [1,5,10]
         x = F.softmax(x, dim=-1)
         return x.view(*shp)
     
+class NormedLinear(nn.Linear):
+    """Couche linéaire avec LayerNorm et Mish activation."""
+    def __init__(self, *args, dropout=0., act=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ln = nn.LayerNorm(self.out_features)
+        self.act = act if act is not None else nn.Mish()
+        self.dropout = nn.Dropout(dropout) if dropout > 0 else None
 
-def l1(pred, target, reduce=False):
-	"""Computes the L1-loss between predictions and targets."""
-	return F.l1_loss(pred, target, reduction=__REDUCE__(reduce))
+    def forward(self, x):
+        x = super().forward(x)
+        if self.dropout:
+            x = self.dropout(x)
+        return self.act(self.ln(x))
+    
 
-
-def mse(pred, target, reduce=False):
-	"""Computes the MSE loss between predictions and targets."""
-	return F.mse_loss(pred, target, reduction=__REDUCE__(reduce))
-
-
-def _get_out_shape(in_shape, layers):
-	"""Utility function. Returns the output shape of a network for a given input shape."""
-	x = torch.randn(*in_shape).unsqueeze(0)
-	return (nn.Sequential(*layers) if isinstance(layers, list) else layers)(x).squeeze(0).shape
-
-
-def orthogonal_init(m):
-	"""Orthogonal layer initialization."""
-	if isinstance(m, nn.Linear):
-		nn.init.orthogonal_(m.weight.data)
-		if m.bias is not None:
-			nn.init.zeros_(m.bias)
-	elif isinstance(m, nn.Conv2d):
-		gain = nn.init.calculate_gain('relu')
-		nn.init.orthogonal_(m.weight.data, gain)
-		if m.bias is not None:
-			nn.init.zeros_(m.bias)
-
-
-def ema(m, m_target, tau):
-	"""Update slow-moving average of online network (target network) at rate tau."""
-	with torch.no_grad():
-		for p, p_target in zip(m.parameters(), m_target.parameters()):
-			p_target.data.lerp_(p.data, tau)
-
-
-def set_requires_grad(net, value):
-	"""Enable/disable gradients for a given (sub)network."""
-	for param in net.parameters():
-		param.requires_grad_(value)
 
 
 class TruncatedNormal(pyd.Normal):
@@ -126,8 +100,19 @@ def enc(cfg):
 		out_shape = _get_out_shape((C, cfg.img_size, cfg.img_size), layers)
 		layers.extend([Flatten(), nn.Linear(np.prod(out_shape), cfg.latent_dim)])
 	else:
-		layers = [nn.Linear(cfg.obs_shape[0], cfg.enc_dim), nn.ELU(),
-				  nn.Linear(cfg.enc_dim, cfg.latent_dim), SimNorm(cfg)]
+		if cfg.simnorm:
+			if cfg.normedlinear:
+				print("SIMNORM + LN")
+				layers = [NormedLinear(cfg.obs_shape[0], cfg.enc_dim),
+							NormedLinear(cfg.enc_dim, cfg.latent_dim, act=SimNorm(cfg))]
+			else : 
+				layers = [nn.Linear(cfg.obs_shape[0], cfg.enc_dim), nn.ELU(),
+						nn.Linear(cfg.enc_dim, cfg.latent_dim,act=SimNorm(cfg))]
+				
+		else : 
+			print("BASIC TDMPC")
+			layers = [nn.Linear(cfg.obs_shape[0], cfg.enc_dim), nn.ELU(),
+					nn.Linear(cfg.enc_dim, cfg.latent_dim)]
 	return nn.Sequential(*layers)
 
 
@@ -139,6 +124,23 @@ def mlp(in_dim, mlp_dim, out_dim, act_fn=nn.ELU()):
 		nn.Linear(in_dim, mlp_dim[0]), act_fn,
 		nn.Linear(mlp_dim[0], mlp_dim[1]), act_fn,
 		nn.Linear(mlp_dim[1], out_dim))
+
+def mlp_tdmpc2(in_dim, mlp_dim, out_dim, dropout=0., last_act=None):
+    """Générateur de MLP robuste type TD-MPC2."""
+    if isinstance(mlp_dim, int):
+        mlp_dim = [mlp_dim, mlp_dim]
+    
+    layers = [
+        NormedLinear(in_dim, mlp_dim[0], dropout=dropout),
+        NormedLinear(mlp_dim[0], mlp_dim[1])
+    ]
+    
+    if last_act:
+        layers.append(NormedLinear(mlp_dim[1], out_dim, act=last_act))
+    else:
+        layers.append(nn.Linear(mlp_dim[1], out_dim))
+        
+    return nn.Sequential(*layers)
 
 def q(cfg, act_fn=nn.ELU()):
 	"""Returns a Q-function that uses Layer Normalization."""
@@ -305,3 +307,45 @@ def linear_schedule(schdl, step):
 			mix = np.clip(step / duration, 0.0, 1.0)
 			return (1.0 - mix) * init + mix * final
 	raise NotImplementedError(schdl)
+
+
+def l1(pred, target, reduce=False):
+	"""Computes the L1-loss between predictions and targets."""
+	return F.l1_loss(pred, target, reduction=__REDUCE__(reduce))
+
+
+def mse(pred, target, reduce=False):
+	"""Computes the MSE loss between predictions and targets."""
+	return F.mse_loss(pred, target, reduction=__REDUCE__(reduce))
+
+
+def _get_out_shape(in_shape, layers):
+	"""Utility function. Returns the output shape of a network for a given input shape."""
+	x = torch.randn(*in_shape).unsqueeze(0)
+	return (nn.Sequential(*layers) if isinstance(layers, list) else layers)(x).squeeze(0).shape
+
+
+def orthogonal_init(m):
+	"""Orthogonal layer initialization."""
+	if isinstance(m, nn.Linear):
+		nn.init.orthogonal_(m.weight.data)
+		if m.bias is not None:
+			nn.init.zeros_(m.bias)
+	elif isinstance(m, nn.Conv2d):
+		gain = nn.init.calculate_gain('relu')
+		nn.init.orthogonal_(m.weight.data, gain)
+		if m.bias is not None:
+			nn.init.zeros_(m.bias)
+
+
+def ema(m, m_target, tau):
+	"""Update slow-moving average of online network (target network) at rate tau."""
+	with torch.no_grad():
+		for p, p_target in zip(m.parameters(), m_target.parameters()):
+			p_target.data.lerp_(p.data, tau)
+
+
+def set_requires_grad(net, value):
+	"""Enable/disable gradients for a given (sub)network."""
+	for param in net.parameters():
+		param.requires_grad_(value)
