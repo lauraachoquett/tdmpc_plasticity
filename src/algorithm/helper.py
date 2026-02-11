@@ -107,7 +107,7 @@ def enc(cfg):
 							NormedLinear(cfg.enc_dim, cfg.latent_dim, act=SimNorm(cfg))]
 			else : 
 				layers = [nn.Linear(cfg.obs_shape[0], cfg.enc_dim), nn.ELU(),
-						nn.Linear(cfg.enc_dim, cfg.latent_dim,act=SimNorm(cfg))]
+						nn.Linear(cfg.enc_dim, cfg.latent_dim),SimNorm(cfg)]
 				
 		else : 
 			print("BASIC TDMPC")

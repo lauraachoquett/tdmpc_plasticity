@@ -114,7 +114,7 @@ def train(cfg):
 		if env_step % cfg.eval_freq == 0:
 			common_metrics['episode_reward'] = evaluate(env, agent, cfg.eval_episodes, step, env_step, L.video)
 			L.log(common_metrics, category='eval')
-			plot_metrics(work_dir)
+			plot_metrics([str(work_dir)],name="exp",labels=['exp'])
 
 	L.finish(agent)
 	print('Training completed successfully')
