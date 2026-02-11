@@ -289,7 +289,6 @@ class TDMPC():
 		total_loss = self.cfg.consistency_coef * consistency_loss.clamp(max=1e4) + \
 					 self.cfg.reward_coef * reward_loss.clamp(max=1e4) + \
 					 self.cfg.value_coef * value_loss.clamp(max=1e4)
-		print("Total loss shape :",total_loss.shape)
 		# Compute NTK et covariance des gradients :
 		if compute_K:
 			grad_cov = self.model.compute_gradient_covariance(total_loss.squeeze(1), self.device)
