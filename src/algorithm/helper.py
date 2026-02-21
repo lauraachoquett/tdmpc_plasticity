@@ -17,7 +17,6 @@ __REDUCE__ = lambda b: 'mean' if b else 'none'
 
 
 class SimNorm(nn.Module):
-    """Normalisation simpliciale pour stabiliser l'espace latent."""
     def __init__(self, cfg):
         super().__init__()
         self.dim = cfg.simnorm_dim if hasattr(cfg, 'simnorm_dim') else 8
@@ -29,7 +28,6 @@ class SimNorm(nn.Module):
         return x.view(*shp)
     
 class NormedLinear(nn.Linear):
-    """Couche linéaire avec LayerNorm et Mish activation."""
     def __init__(self, *args, dropout=0., act=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.ln = nn.LayerNorm(self.out_features)
@@ -126,7 +124,6 @@ def mlp(in_dim, mlp_dim, out_dim, act_fn=nn.ELU()):
 		nn.Linear(mlp_dim[1], out_dim))
 
 def mlp_tdmpc2(in_dim, mlp_dim, out_dim, dropout=0., last_act=None):
-    """Générateur de MLP robuste type TD-MPC2."""
     if isinstance(mlp_dim, int):
         mlp_dim = [mlp_dim, mlp_dim]
     

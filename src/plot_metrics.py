@@ -29,6 +29,8 @@ def load_data_from_log(folder):
         "srank": [],
         "env_step_eval": [],
         "eval_rewards": [],
+        "grad_cov_rank":[],
+        "grad_cov_frob":[],
         "eNTK_rank":[],
         "eNTK_frob":[]
     }
@@ -42,8 +44,9 @@ def load_data_from_log(folder):
         "zgr",
         "fzar",
         "srank",
-        "NTK_rank",
-        "NTK_frobenius"
+        "grad_cov_rank",
+        "grad_cov_frob",
+        "eNTK_rank",
     ]
 
     skipped = 0
@@ -67,8 +70,10 @@ def load_data_from_log(folder):
                 results["zgr"].append(float(row["zgr"]))
                 results["fzar"].append(float(row["fzar"]))
                 results["srank"].append(float(row["srank"]))
-                results["eNTK_rank"].append(float(row["NTK_rank"]))
-                results["eNTK_frob"].append(float(row["NTK_frobenius"]))
+                results["eNTK_rank"].append(float(row["eNTK_rank"]))
+                results["eNTK_frob"].append(float(row["eNTK_frob"]))
+                results["grad_cov_rank"].append(float(row["grad_cov_rank"]))
+                results["grad_cov_frob"].append(float(row["grad_cov_frob"]))
             except ValueError:
                 skipped += 1
                 continue
@@ -100,13 +105,13 @@ def plot_metrics(folders,name='plot_metrics.png',labels=[]):
 
     # Création figure 2x2
     fig, axs = plt.subplots(2, 3, figsize=(14, 8))
-    axs = axs.flatten()  # pour indexer facilement axs[0], axs[1], ...
-    cmap = plt.get_cmap("tab10")  # "tab10" a 10 couleurs distinctes, tu peux aussi utiliser "tab20" ou "viridis"
+    axs = axs.flatten()  
+    cmap = plt.get_cmap("tab10")  
     colors = [cmap(i) for i in range(len(all_results))]
-    min_len = min(len(result['env_step_metrics']) for result in all_results)
+    min_len = min(len(result['env_step_metrics']) for result in all_results) ## Same number of steps for each metrics
+    
     legend_elements = []
     for id,result in enumerate(all_results):
-        print("id : ",id)
         # 1️⃣ Weight magnitude & distance
         axs[0].plot(result['env_step_metrics'][:min_len], result['weight_distance'][:min_len], color=colors[id])
         axs[0].set_title('Weights Distance')
@@ -148,7 +153,7 @@ def plot_metrics(folders,name='plot_metrics.png',labels=[]):
         axs[4].grid(True)
 
         # 5️⃣ Gradient norm
-        axs[5].plot(result['env_step_metrics'][:min_len], result['grad_norm'][:min_len], color=colors[id])
+        axs[5].plot(result['env_step_metrics'][:min_len][::3], result['grad_norm'][:min_len][::3], color=colors[id],alpha = 0.8)
         axs[5].set_title('Gradient Norm (gn)')
         axs[5].set_xlabel('Env steps')
         plt.setp(axs[5].get_xticklabels(), rotation=45, ha='right')  
@@ -167,7 +172,6 @@ def plot_metrics(folders,name='plot_metrics.png',labels=[]):
     )
     plt.tight_layout()
 
-
     os.makedirs(path_save_fig,exist_ok=True)
     metadata = {
         "timestamp": timestamp,
@@ -183,11 +187,12 @@ def plot_metrics(folders,name='plot_metrics.png',labels=[]):
     plt.savefig(f'{path_save_fig}/' +name,dpi=300,bbox_inches='tight')
     plt.close()
     
+    ## Figure : Rewards training and evaluation
     fig, ax = plt.subplots(figsize=(12, 8))
     min_len_eval = min(len(result['env_step_eval']) for result in all_results)
 
     for id,result in enumerate(all_results):
-        ax.plot(result['env_step_rewards'][:min_len], result['episode_reward'][:min_len], color=colors[id])
+        ax.plot(result['env_step_rewards'][:min_len], result['episode_reward'][:min_len], color=colors[id],alpha=0.4)
         ax.plot(result['env_step_eval'][:min_len_eval], result['eval_rewards'][:min_len_eval],  color=colors[id],marker='x')
        
      
@@ -204,7 +209,8 @@ def plot_metrics(folders,name='plot_metrics.png',labels=[]):
     plt.savefig(f'{path_save_fig}/' +name+'_plot_reward.png',dpi=300,bbox_inches='tight')
     plt.close()
     
-    fig, axs = plt.subplots(2, 1, figsize=(14, 8))
+    ### Figure eNTK and Grad cov
+    fig, axs = plt.subplots(2, 2, figsize=(14, 8))
     axs = axs.flatten() 
     for id,result in enumerate(all_results):
         axs[0].plot(result['env_step_metrics'][:min_len], result['eNTK_rank'][:min_len], color=colors[id])
@@ -216,11 +222,26 @@ def plot_metrics(folders,name='plot_metrics.png',labels=[]):
 
         # 6️⃣ Rewards
         axs[1].plot(result['env_step_metrics'][:min_len], result['eNTK_frob'][:min_len], color=colors[id])
-        axs[1].set_title('eNTK Frobenius Norm')
+        axs[1].set_title('eNTK frob Norm')
         axs[1].set_xlabel('Env steps')
         plt.setp(axs[1].get_xticklabels(), rotation=45, ha='right')  
         axs[1].set_ylabel('Value')
         axs[1].grid(True)
+        
+        axs[2].plot(result['env_step_metrics'][:min_len], result['grad_cov_rank'][:min_len], color=colors[id])
+        axs[2].set_title('grad_cov Rank')
+        axs[2].set_xlabel('Env steps')
+        plt.setp(axs[2].get_xticklabels(), rotation=45, ha='right')  
+        axs[2].set_ylabel('Value')
+        axs[2].grid(True)
+
+        # 6️⃣ Rewards
+        axs[3].plot(result['env_step_metrics'][:min_len], result['grad_cov_frob'][:min_len], color=colors[id])
+        axs[3].set_title('grad_cov frob Norm')
+        axs[3].set_xlabel('Env steps')
+        plt.setp(axs[3].get_xticklabels(), rotation=45, ha='right')  
+        axs[3].set_ylabel('Value')
+        axs[3].grid(True)
     fig.legend(
         handles=legend_elements,
         loc="center",
@@ -230,20 +251,27 @@ def plot_metrics(folders,name='plot_metrics.png',labels=[]):
     plt.tight_layout()
     plt.savefig(f'{path_save_fig}/' +name+'_eNKT.png',dpi=300,bbox_inches='tight')
     plt.close()
+    
+
+    ### Conditionnement of Grad Cov and eNTK
+    ### Appel
+    for name, label in zip(['eNTK', 'K'], ['eNTK', 'Grad cov']):
+        make_figure(name, label, folders, legend_elements, path_save_fig)
 
 
 
 
-def save_K(K,save_file,step):
+
+def save_K(K,save_file,step,name='K'):
     folder_save_K = os.path.join(save_file,'data')
     os.makedirs(folder_save_K,exist_ok=True)
     K_np = K.cpu().numpy()
-    path_save_K = f'{folder_save_K}/K_{step}'
+    path_save_K = f'{folder_save_K}/{name}_{step}'
     np.save(path_save_K,K_np)
     return folder_save_K
 
-def plot_K(folder_data,save_file,step):
-    path_save_K = f'{folder_data}/K_{step}.npy'
+def plot_K(folder_data,save_file,step,name='K'):
+    path_save_K = f'{folder_data}/{name}_{step}.npy'
     K_np = np.load(path_save_K)
     
     # K_norm = K_np / np.max(np.abs(K_np))
@@ -258,28 +286,88 @@ def plot_K(folder_data,save_file,step):
     plt.tight_layout()
     path_save_file = os.path.join(save_file,'fig/')
     os.makedirs(path_save_file,exist_ok=True)
-    plt.savefig(f'{path_save_file}/K_{step}.png')
-    
-    
-def cond_K(file):
-    p = Path(file+'/data')
-    steps={}
-    for f in p.glob("*.npy"):
+    plt.savefig(f'{path_save_file}/{name}_{step}.png')
+      
+def cond_K(folder, ax_dict, name='eNTK', label='eNTK', normalize=False):
+    p = Path(folder) / "data"
+    steps = {}
+
+    for f in p.glob(f"{name}*.npy"):
         K_np = np.load(f)
-        c_K=LA.cond(K_np)
-        end = str(f).split("_")[-1]
-        step = int(end.split('.')[0])
-        steps[step]=c_K
-    steps_sorted = dict(sorted(steps.items()))
-    xs = sorted(steps_sorted.keys())
-    ys = [steps_sorted[x] for x in xs]
-    plt.plot(xs, ys)
-    plt.xlabel("step")
-    plt.yscale('log')
-    plt.ylabel("cond(eNTK)")
-    path_save_fig = os.path.join(file,'fig/')
-    plt.savefig(f'{path_save_fig}cond_eNTK',dpi=300,bbox_inches='tight')
+
+        if normalize:
+            norm = np.max(np.abs(K_np))
+            if norm > 0:
+                K_np = K_np / norm
+
+        eigvals = LA.eigvalsh(K_np)
+        off_diag = K_np - np.diag(np.diag(K_np))
+
+        step = int(f.stem.split("_")[-1])
+        steps[step] = {
+            "cond":       LA.cond(K_np),
+            "lambda_min": eigvals[0],
+            "lambda_max": eigvals[-1],
+            "rank_off":   LA.matrix_rank(off_diag),
+            "sum_pos":    np.sum(K_np[K_np > 0]),
+            "sum_neg":    np.sum(K_np[K_np < 0]),
+        }
+
+    xs = sorted(steps.keys())
+    series = {k: [steps[x][k] for x in xs] for k in steps[next(iter(steps))]}
+
+    plot_cfg = {
+        "cond":       {"ylabel": f"cond({label})",          "yscale": "log"},
+        "lambda_min": {"ylabel": f"λ_min({label})",         "yscale": "symlog"},
+        "lambda_max": {"ylabel": f"λ_max({label})",         "yscale": "log"},
+        "rank_off":   {"ylabel": f"rank(off-diag {label})", "yscale": "linear"},
+        "sum_pos":    {"ylabel": f"Σ positive ({label})",   "yscale": "log"},
+        "sum_neg":    {"ylabel": f"Σ negative ({label})",   "yscale": "symlog"},
+    }
+
+    for key, ax in ax_dict.items():
+        cfg = plot_cfg[key]
+        ax.plot(xs, series[key])
+        ax.set_ylabel(cfg["ylabel"])
+        ax.set_yscale(cfg["yscale"])
+
+    return xs, series
+
+
+def make_figure(name, label, folders, legend_elements, path_save_fig, normalize=False):
+    metrics = ["cond", "lambda_min", "lambda_max", "rank_off", "sum_pos", "sum_neg"]
+    n = len(metrics)
+
+    fig, axs = plt.subplots(
+        n, 1,
+        figsize=(12, 3 * n),
+        sharex=True  # partage l'axe des steps sur toute la colonne
+    )
+
+    for ax, metric in zip(axs, metrics):
+        ax.set_title(metric)
+
+    for folder in folders:
+        ax_dict = {metric: axs[i] for i, metric in enumerate(metrics)}
+        cond_K(folder, ax_dict, name=name, label=label, normalize=normalize)
+
+    # xlabel uniquement sur le dernier axe (sharex)
+    axs[-1].set_xlabel("step")
+
+    fig.legend(
+        handles=legend_elements,
+        loc="center",
+        ncol=2,
+        bbox_to_anchor=(0.5, 1.01)
+    )
+    fig.suptitle(label, fontsize=14, y=1.03)
+    plt.tight_layout()
+    plt.savefig(f"{path_save_fig}/{name}_cond.png", dpi=300, bbox_inches="tight")
     plt.close()
+
+
+
+
 
 from matplotlib.animation import FFMpegWriter
 import matplotlib.pyplot as plt
@@ -313,22 +401,29 @@ def create_ntk_video_matplotlib(save_file, output_name='ntk_evolution.mp4', fps=
 
     
 if __name__ == '__main__' : 
-    path_train = 'logs/cartpole-swingup/state/K_BASIC_TDMPC_SimNorm/1' 
-    path_train_two = 'logs/cartpole-swingup/state/K_BASIC_tdmpc_bis/1'
-    path_train_three = 'logs/cartpole-swingup/state/K_with_LN_enc_simnorm_500/1'
-    path_train_tdmpc2 = 'logs/cartpole-swingup/state/K_tdmpc2/1'
-    # path_all_train =[path_train_two,path_train,path_train_three,path_train_tdmpc2]
-    # labels = ['TD-MPC','TD-MPC + SimNorm','TD-MPC + SimNorm + LN','TD-MPC2']
+    # path_train = 'logs/cartpole-swingup/state/eNTK_TDMPC_Basic/1' 
+    # path_train_two = 'logs/cartpole-swingup/state/eNTK_TDMPC_simnorm_bis/1'
+    # path_train_three = 'logs/cartpole-swingup/state/eNTK_TDMPC_simnorm_with_LN_enc/1'
+    # path_train_tdmpc2 = 'logs/cartpole-swingup/state/eNTK_TDMPC2_500/1'
+    # path_train_mish = 'logs/cartpole-swingup/state/eNTK_SimNorm_LN_without_Mish/1'
+    # path_all_train =[path_train,path_train_two,path_train_three,path_train_tdmpc2]
+    # labels = ['TD-MPC','TD-MPC + SimNorm','TD-MPC + SimNorm + LN + Mish','TD-MPC2']
+    # path_all_train =[path_train_three,path_train_mish]
+    # labels = ['TD-MPC + SimNorm + LN + Mish','TD-MPC + SimNorm + LN']
     
-    path_1 = 'logs/pendulum-swingup/state/K_BASIC_TDMPC_SimNorm/1'
-    path_2 = 'logs/pendulum-swingup/state/K_BASIC_TDMPC_SimNorm_LN_enc/1'
-    paths = [path_1,path_2]
-    labels = ['TD-MPC + SimNorm','TD-MPC + SimNorm + LN']
+    path_1 = 'logs/pendulum-swingup/state/eNTK_BASIC/1'
+    path_2 = 'logs/pendulum-swingup/state/eNTK_BASIC_SimNorm_LN_mish/1'
+    path_3 = 'logs/pendulum-swingup/state/eNTK_SimNorm_LN_without_Mish/1'
+    paths = [path_1,path_2,path_3]
+    labels = ['TD-MPC','TD-MPC + SimNorm + LN + Mish','TD-MPC + SimNorm + LN']
     # path_all_train =[path_train_two,path_train_three,path_train_tdmpc2]
     # labels = ['TD-MPC','TD-MPC + SimNorm + LN','TD-MPC2']
-    plot_metrics(paths,name="comparison_TD-MPC_all_and_2",labels=labels)
+    plot_metrics(paths,name="pendulum_comparison",labels=labels)
     
     
+    # path_alone = 'logs/cartpole-swingup/state/eNTK_TDMPC_simnorm/1'
+    # plot_metrics([path_alone],name="exp_aaa",labels=['exp'])
+
     # save_file = 'logs/cartpole-swingup/state/K_BASIC_TDMPC/1'
     # create_ntk_video_matplotlib(save_file, output_name='ntk_evolution.mp4', fps=5)
     # for path in path_all_train:

@@ -4,7 +4,7 @@ modality: 'state'
 action_repeat: ???
 discount: 0.99
 episode_length: 1000/${action_repeat}
-train_steps: 500000/${action_repeat}
+train_steps: 250000/${action_repeat}
 
 # planning
 iterations: 6
@@ -30,7 +30,7 @@ horizon_schedule: linear(1, ${horizon}, 25000)
 per_alpha: 0.6
 per_beta: 0.4
 grad_clip_norm: 10
-seed_steps: 500
+seed_steps: 5000
 update_freq: 2
 tau: 0.01
 
@@ -53,4 +53,4 @@ exp_name: default_mps
 eval_freq: 20000
 eval_episodes: 10
 save_video: false
-save_model: false
+save_model: true

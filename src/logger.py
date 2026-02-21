@@ -11,7 +11,7 @@ from omegaconf import OmegaConf
 
 CONSOLE_FORMAT = [('episode', 'E', 'int'), ('env_step', 'S', 'int'), ('episode_reward', 'R', 'float'), ('total_time', 'T', 'time')]
 AGENT_METRICS = ['grad_norm', 
-    'weight_distance', 'weight_magnitude','zgr','fzar','srank', 'NTK_rank','NTK_frobenius'
+    'weight_distance', 'weight_magnitude','zgr','fzar','srank', 'grad_cov_rank','grad_cov_frob','eNTK_rank','eNTK_frob'
 ]
 
 def make_dir(dir_path):

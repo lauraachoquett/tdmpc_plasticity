@@ -3,8 +3,9 @@ import torch
 import torch.nn as nn
 from copy import deepcopy
 import algorithm.helper as h
-
+import time
 import torch
+from torch.func import functional_call, vmap, jacrev
 
 
 class TOLD(nn.Module):
@@ -53,7 +54,6 @@ class TOLD(nn.Module):
 
 
 	def compute_zgr_from_z(self, z: torch.Tensor, eps: float = 1e-6) -> float:
-
 		if z.grad is None:
 			raise RuntimeError("z.grad is None. Did you forget retain_grad() or backward()?")
 
@@ -83,16 +83,16 @@ class TOLD(nn.Module):
 			return int(k.item() + 1)
 
 	def compute_gradient_covariance(self, loss_per_sample, device):
-		"""Calcule matrice de similarité des gradients normalisés."""
+		"""Compute gradient covariance matrix"""
 		encoder_params = [p for p in self._encoder.parameters() if p.requires_grad]
-		N = loss_per_sample.shape[0] // 6  # Sous-échantillonnage
+		N = loss_per_sample.shape[0] // 6  # Down-sample
 		P = sum(p.numel() for p in encoder_params)
 		
 		G = torch.zeros(N, P, device=device)
 		
 		step = loss_per_sample.shape[0] // N  # = 6
 		for i in range(N):
-			idx = i * step  # Échantillonner uniformément
+			idx = i * step  # Uniform sampling
 			grads = torch.autograd.grad(
 				outputs=loss_per_sample[idx],
 				inputs=encoder_params,
@@ -102,10 +102,55 @@ class TOLD(nn.Module):
 			grads_flat = torch.cat([g.view(-1) for g in grads])
 			G[i] = grads_flat / (grads_flat.norm() + 1e-10)
 		
-		# Matrice de Gram (similarité cosinus)
+		#Cosine similarity
 		Gram = G @ G.T
 		
 		return Gram
+
+	def get_k_center_indices(self, z, k=36):
+		n = z.shape[0]  
+
+		if n < k:
+			k = n
+
+		selected_indices = [torch.randint(0, n, (1,)).item()]
+		
+		min_distances = torch.cdist(z[selected_indices], z, p=2).min(dim=0).values
+
+		## Greedy selection of z elements far from each other
+		for _ in range(1, k):
+			new_idx = torch.argmax(min_distances).item()
+			selected_indices.append(new_idx)
+			new_dist = torch.norm(z - z[new_idx], dim=1)
+			min_distances = torch.min(min_distances, new_dist)
+			
+		return selected_indices
+
+	def compute_eNTK(self, obs):
+		start_time= time.time()
+		z = self.h(obs)
+		#Reduce size to enable raisonable computation time
+		indices = self.get_k_center_indices(z.detach(), k=36)
+		obs_reduced	 = obs[indices]
+		params = {k: v.detach() for k, v in self._encoder.named_parameters()}
+
+		
+		def fnet_single(params, x):
+			return functional_call(self._encoder, params, (x.unsqueeze(0),)).squeeze(0)
+
+		jacs = vmap(jacrev(fnet_single), in_dims=(None, 0))(params, obs_reduced)
+
+		flat_jacs = torch.cat([j.flatten(2) for j in jacs.values()], dim=2)
+		
+		j_full = flat_jacs.view(36 * 50, -1) 
+		eNTK_full = j_full @ j_full.T
+		
+		# j_pseudo = flat_jacs.sum(dim=1) # (36, P)
+		# pNTK = j_pseudo @ j_pseudo.T
+		
+		print("Time to compute eNTK in s : ",(time.time()-start_time))
+		return eNTK_full 
+
 
 class TDMPC():
 	"""Implementation of TD-MPC learning + inference."""
@@ -259,10 +304,13 @@ class TDMPC():
 		# Representation
 		z_backbone = self.model.h(self.aug(obs))
 		z_backbone.retain_grad()
+  
 		if compute_metrics:
 			srank = self.model.compute_srank(self.aug(obs))
 			fzar = self.model.compute_fzar_from_obs(self.aug(obs))
-  
+		if compute_K:
+			eNTK = self.model.compute_eNTK(self.aug(obs))
+
 		# Copy pour rollout
 		z = z_backbone
 		zs = [z.detach()]
@@ -289,12 +337,11 @@ class TDMPC():
 		total_loss = self.cfg.consistency_coef * consistency_loss.clamp(max=1e4) + \
 					 self.cfg.reward_coef * reward_loss.clamp(max=1e4) + \
 					 self.cfg.value_coef * value_loss.clamp(max=1e4)
+      
 		# Compute NTK et covariance des gradients :
 		if compute_K:
-			grad_cov = self.model.compute_gradient_covariance(total_loss.squeeze(1), self.device)
-			print("K computed")
+			grad_cov = self.model.compute_gradient_covariance(consistency_loss.squeeze(1), self.device)
 			
-
 		weighted_loss = (total_loss.squeeze(1) * weights).mean()
 		weighted_loss.register_hook(lambda grad: grad * (1/self.cfg.horizon))
 		weighted_loss.backward()
@@ -328,6 +375,7 @@ class TDMPC():
           		'fzar':fzar,
             	'srank':srank,
              	'K':grad_cov if compute_K else 0,
+                'eNTK' : eNTK if compute_K else 0
               }
 
 	@torch.no_grad()
@@ -342,10 +390,7 @@ class TDMPC():
 
 	@torch.no_grad()
 	def calculate_weight_distance(self):
-		"""
-		Calcule la Distance des Poids : 
-		Somme des moyennes des distances quadratiques (w - w0)^2 par couche.
-		"""
+
 		total_distance = 0
 		for p, p0 in zip(self.model.parameters(), self.initial_model.parameters()):
 			if p.requires_grad:

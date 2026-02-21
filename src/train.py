@@ -17,6 +17,7 @@ from algorithm.helper import Episode, ReplayBuffer
 import logger
 from plot_metrics import plot_metrics,plot_K,save_K
 import yaml
+from omegaconf import OmegaConf
 
 torch.backends.cudnn.benchmark = True
 __CONFIG__, __LOGS__ = 'cfgs', 'logs'
@@ -52,8 +53,7 @@ def evaluate(env, agent, num_episodes, step, env_step, video):
 
 def train(cfg):
 	"""Training script for TD-MPC. Requires a CUDA-enabled device."""
- 
-        
+
 	set_seed(cfg.seed)
 	work_dir = Path().cwd() / __LOGS__ / cfg.task / cfg.modality / cfg.exp_name / str(cfg.seed)
 	
@@ -63,10 +63,13 @@ def train(cfg):
 	
 	# Run training
 	L = logger.Logger(work_dir, cfg)
- 
+	OmegaConf.save(cfg, work_dir / "config.yaml")
+
 	episode_idx, start_time = 0, time.time()
 	grad_cov_rank = 0
-	grad_cov_frobenius = 0
+	grad_cov_frob = 0
+	eNTK_rank = 0
+	eNTK_frob = 0
 	for step in range(0, cfg.train_steps+cfg.episode_length, cfg.episode_length):
 
 		# Collect trajectory
@@ -78,8 +81,8 @@ def train(cfg):
 			episode += (obs, action, reward, done)
 		assert len(episode) == cfg.episode_length
 		buffer += episode
-		# compute_K = True
-		compute_K = (episode_idx%20==0)
+		#compute_K = True
+		compute_K = (episode_idx%20==0) #Compute eNTK and Gradient covariance matrix every 20 episodes
   
 		# Update model
 		train_metrics = {}
@@ -89,13 +92,20 @@ def train(cfg):
 				agent.update(buffer, step+i)
 			train_metrics.update(agent.update(buffer, step+i,compute_metrics=True,compute_K=compute_K))
 			if compute_K:
+				eNTK = train_metrics['eNTK']
 				K = train_metrics['K']
-				path_save_K = save_K(K,work_dir,step)
-				plot_K(path_save_K,work_dir,step)
+				path_save_K = save_K(K,work_dir,env_step,name='K')
+				path_save_eNTK = save_K(eNTK,work_dir,env_step,name='eNTK')
+				plot_K(path_save_K,work_dir,env_step,name="K")
+				plot_K(path_save_eNTK,work_dir,env_step,name='eNTK')
 				grad_cov_rank = torch.linalg.matrix_rank(K.cpu(),hermitian=True).item()
-				grad_cov_frobenius = torch.norm(K, 'fro').item()
-			train_metrics['NTK_rank'] = grad_cov_rank
-			train_metrics['NTK_frobenius'] = grad_cov_frobenius
+				eNTK_rank = torch.linalg.matrix_rank(eNTK.cpu(),hermitian=True).item()
+				grad_cov_frob = torch.norm(K, 'fro').item()
+				eNTK_frob = torch.norm(eNTK, 'fro').item()
+			train_metrics['grad_cov_rank'] = grad_cov_rank
+			train_metrics['grad_cov_frob'] = grad_cov_frob
+			train_metrics['eNTK_rank'] = eNTK_rank
+			train_metrics['eNTK_frob'] = eNTK_frob
    
 		# Log training episode
 		episode_idx += 1
