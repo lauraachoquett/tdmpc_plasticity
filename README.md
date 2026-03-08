@@ -1,8 +1,3 @@
-Repo forked from 
-
-[Temporal Difference Learning for Model Predictive Control](https://arxiv.org/abs/2203.04955) by
-
-[Nicklas Hansen](https://nicklashansen.github.io), [Xiaolong Wang](https://xiaolonw.github.io)\*, [Hao Su](https://cseweb.ucsd.edu/~haosu)\*
 ---
 # TD-MPC Plasticity Instrumentation
 
@@ -41,4 +36,8 @@ The repository logs several metrics during training:
 | Stable rank | Estimates effective feature dimensionality |
 | ENTK | Captures representation dynamics |
 
+--- 
 
+[Temporal Difference Learning for Model Predictive Control](https://arxiv.org/abs/2203.04955) by
+
+[Nicklas Hansen](https://nicklashansen.github.io), [Xiaolong Wang](https://xiaolonw.github.io)\*, [Hao Su](https://cseweb.ucsd.edu/~haosu)\*
